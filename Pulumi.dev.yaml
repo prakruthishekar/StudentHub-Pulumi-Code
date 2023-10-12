@@ -1,0 +1,7 @@
+config:
+  Main:cidrBlock: "10.0.0.0/16"
+  aws-infrastructure-setup:cidrBlock: 10.0.0.0/16
+  aws-infrastructure-setup:cloudName: us-east-1
+  aws-infrastructure-setup:planName: business-4
+  aws-infrastructure-setup:serviceName: kafka-gcp-eu
+  aws:profile: dev

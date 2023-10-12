@@ -1,0 +1,6 @@
+name: aws-infrastructure-setup
+runtime:
+  name: python
+  options:
+    virtualenv: venv
+description: Infrastructure setup in AWS
