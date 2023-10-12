@@ -5,3 +5,4 @@ config:
   aws-infrastructure-setup:planName: business-4
   aws-infrastructure-setup:serviceName: kafka-gcp-eu
   aws:profile: dev
+  aws:region: us-east-1
