@@ -28,6 +28,7 @@ $ pulumi config set aws:profile demo
 
 ### Define the CIDR block
 $ pulumi config set cidrBlock "10.0.0.0/16"
+$ pulumi config set customAmiId "ami-020b251b4f78f405a"
 
 ### Deploy to the dev environment
 $ pulumi stack select dev
@@ -37,6 +38,11 @@ $ AWS_PROFILE=dev pulumi up
 $ pulumi stack select demo
 $ AWS_PROFILE=demo pulumi up
 
+
+### Check and Set the AWS region configured
+$ pulumi config get aws:region
+$ pulumi config set aws:region us-west-1
+
 ### Destroy resources in the dev environment
 $ pulumi stack select dev
 $ pulumi destroy
@@ -44,3 +50,17 @@ $ pulumi destroy
 ### Destroy resources in the demo environment
 $ pulumi stack select demo
 $ pulumi destroy
+
+pulumi stack -> will give the stack selected
+
+
+If you change the region destroy the stack using the below command
+$ pulumi stack rm --force demo  
+
+
+
+pulumi refresh will delete or create the resourse which had problem in getting created or de
+
+
+pulumi up 
+pulumi down

@@ -20,12 +20,6 @@ availability_zones_result = get_availability_zones()
 availability_zones = pulumi.Output.from_input(availability_zones_result.names).apply(lambda az: az[0:3])
 print(availability_zones_result)
 
-# Create a VPC
-vpc = ec2.Vpc('my-vpc',
-    cidr_block=base_cidr_block,
-    tags={"Name": "my-vpc"}
-)
-
 pulumi.export("VPC ID", vpc.id)
 
 
@@ -101,3 +95,63 @@ route = ec2.Route("public-route",
     gateway_id=internet_gateway.id
 )
 
+
+# 1. Create the Application Security Group
+app_security_group = ec2.SecurityGroup('app-security-group',
+    vpc_id=vpc.id,
+    description='EC2 Security Group for web applications',
+    ingress=[
+        ec2.SecurityGroupIngressArgs(
+            protocol='tcp',
+            from_port=22,
+            to_port=22,
+            cidr_blocks=['0.0.0.0/0']
+        ),
+        ec2.SecurityGroupIngressArgs(
+            protocol='tcp',
+            from_port=80,
+            to_port=80,
+            cidr_blocks=['0.0.0.0/0']
+        ),
+        ec2.SecurityGroupIngressArgs(
+            protocol='tcp',
+            from_port=443,
+            to_port=443,
+            cidr_blocks=['0.0.0.0/0']
+        ),
+        # Add additional ingress rules for other ports as necessary
+    ],
+    egress=[
+        ec2.SecurityGroupEgressArgs(
+            protocol='-1',  # allow all protocols
+            from_port=0,
+            to_port=0,
+            cidr_blocks=['0.0.0.0/0']
+        )
+    ]
+)
+
+# 2. Create the EC2 instance
+ami_id = config.require("customAmiId")  # Ensure you set this value in your Pulumi configuration
+
+ec2_instance = ec2.Instance('my-ec2-instance',
+    instance_type='t2.micro',  # Choose the instance type as per your needs
+    ami=ami_id,
+    vpc_security_group_ids=[app_security_group.id],
+    subnet_id=public_subnets[0],  # Using the first public subnet; modify as needed
+    key_name='webapp',  # Replace with your key name
+    ebs_block_devices=[
+        ec2.InstanceEbsBlockDeviceArgs(
+            device_name='/dev/xvda',  # This can vary based on the AMI used
+            volume_type='gp2',
+            volume_size=25,
+            delete_on_termination=True  # To ensure volume gets deleted on instance termination
+        )
+    ],
+    disable_api_termination=False,  # This ensures the instance isn't protected from accidental termination
+    tags={
+        'Name': 'my-ec2-instance'
+    }
+)
+
+pulumi.export('ec2_instance_id', ec2_instance.id)

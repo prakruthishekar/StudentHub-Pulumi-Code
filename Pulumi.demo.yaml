@@ -1,3 +1,5 @@
 config:
-  aws:profile: demo
   Main:cidrBlock: "10.0.0.0/16"
+  Main:customAmiId: ""
+  aws:profile: demo
+  aws:region: eu-west-1
