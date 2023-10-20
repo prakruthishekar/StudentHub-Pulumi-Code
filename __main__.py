@@ -115,6 +115,12 @@ app_security_group = ec2.SecurityGroup('app-security-group',
         ),
         ec2.SecurityGroupIngressArgs(
             protocol='tcp',
+            from_port=8080,
+            to_port=8080,
+            cidr_blocks=['0.0.0.0/0']
+        ),
+        ec2.SecurityGroupIngressArgs(
+            protocol='tcp',
             from_port=443,
             to_port=443,
             cidr_blocks=['0.0.0.0/0']
