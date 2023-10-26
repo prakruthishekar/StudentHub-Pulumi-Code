@@ -2,8 +2,12 @@ config:
   Main:cidrBlock: "10.0.0.0/16"
   aws-infrastructure-setup:cidrBlock: 10.0.0.0/16
   aws-infrastructure-setup:cloudName: us-east-1
-  aws-infrastructure-setup:customAmiId: ami-075bba31f23d5a5f9
+  aws-infrastructure-setup:customAmiId: ami-0e08580f6eeda5a51
+  aws-infrastructure-setup:db_name: csye6225
+  aws-infrastructure-setup:dbPassword:
+    secure: AAABAJJe8R0seKPpWC3h6Eu/euk0bIP3OEcp9cyK+7CCz2w3zBJeiOZ4HlRvdQk=
   aws-infrastructure-setup:planName: business-4
   aws-infrastructure-setup:serviceName: kafka-gcp-eu
+  aws-infrastructure-setup:username: csye6225
   aws:profile: dev
   aws:region: us-east-1
