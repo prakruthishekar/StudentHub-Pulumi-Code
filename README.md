@@ -10,6 +10,17 @@ This repository provides a Pulumi project for deploying infrastructure on AWS ac
 
 For first-time setup:
 
+### Set AWS profile
+```bash
+aws configure --profile demo
+aws configure --profile dev
+export AWS_PROFILE=demo
+export AWS_PROFILE=dev
+aws configure list
+
+
+```
+
 ### Initialize the Pulumi project
 
 ```bash
@@ -94,6 +105,8 @@ Set the Secret in Pulumi Configuration: You can use the Pulumi CLI to set the se
 
 ```bash
 pulumi config set db_name "csye6225"
-pulumi config set db_username "csye6225"
+pulumi config set username "csye6225"
 pulumi config set --secret dbPassword YOUR_PASSWORD_HERE
+pulumi config set hosted-zone-id "Z0498823D9PQ1YWPC88E"
+pulumi config set domain-name "dev.prakruthi.me"
 ```

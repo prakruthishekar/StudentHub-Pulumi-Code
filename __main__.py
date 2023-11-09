@@ -2,6 +2,8 @@ import pulumi
 from pulumi_aws import ec2
 from pulumi_aws import get_availability_zones
 from pulumi_aws import rds
+from pulumi_aws import route53
+from pulumi_aws import ec2, get_availability_zones, rds, route53, iam
 
 config = pulumi.Config()
 db_name = config.require("db_name")
@@ -131,14 +133,33 @@ app_security_group = ec2.SecurityGroup('app-security-group',
         # Add additional ingress rules for other ports as necessary
     ],
     # Add an egress rule to allow outbound traffic to the RDS instance
-    egress=[
+    egress= [
         ec2.SecurityGroupEgressArgs(
-            protocol="tcp",  # allow all protocols
+            protocol="tcp",
+            from_port=443,
+            to_port=443,
+            cidr_blocks=['0.0.0.0/0'],
+            description="Allow outbound HTTPS traffic for CloudWatch Logs"
+        ),
+        # Allow other necessary outbound traffic, e.g., to RDS instance
+        ec2.SecurityGroupEgressArgs(
+            protocol="tcp",
             from_port=3306,
             to_port=3306,
-            cidr_blocks=['0.0.0.0/0']
-        )
-    ]
+            cidr_blocks=['0.0.0.0/0'],
+            description="Allow outbound MySQL traffic to RDS instance"
+        ),
+        # Default rule to allow all outbound traffic
+        # Remove if you want to restrict outbound traffic
+        ec2.SecurityGroupEgressArgs(
+            protocol="-1",
+            from_port=0,
+            to_port=0,
+            cidr_blocks=["0.0.0.0/0"],
+            description="Allow all outbound traffic by default"
+        ),
+    ],
+        tags={"Name": "app-security-group"}
 )
 
 
@@ -152,6 +173,15 @@ db_security_group = ec2.SecurityGroup('db-security-group',
             from_port=3306,  # For MySQL/MariaDB
             to_port=3306,
             security_groups=[app_security_group.id]  # Reference to the application security group
+        )
+    ],
+    egress=[
+        ec2.SecurityGroupEgressArgs(
+            protocol="tcp",
+            from_port=443,
+            to_port=443,
+            cidr_blocks=['0.0.0.0/0'],
+            description="Allow outbound HTTPS traffic for CloudWatch Logs"
         )
     ]
 )
@@ -224,27 +254,91 @@ ami_id = config.require("customAmiId")  # Ensure you set this value in your Pulu
 
 #User data generation
 user_data=pulumi.Output.all(rds_instance.endpoint, db_username, config.require_secret("dbPassword")).apply(
-        lambda args: f"""#!/bin/bash
-        sudo mkdir -p /opt/webappgroup/env/test
-        sudo echo 'Script executed successfully' > /opt/webappgroup/env/user-data-success.log
-        mkdir -p /opt/webappgroup/env
-        echo 'dbUrl=jdbc:mysql://{args[0]}/CloudDB?createDatabaseIfNotExist=true' > /opt/webappgroup/env/.env
-        echo 'dbUserName={args[1]}' >> /opt/webappgroup/env/.env
-        echo 'dbPass={args[2]}' >> /opt/webappgroup/env/.env
-        echo 'Script executed successfully' > /home/admin/user-data-success.log
-        cat /home/admin/env/.env | tee -a /home/admin/env-success.log
-        export DB_HOST={args[0]}
-        export DB_PORT=3306
-        export DB_NAME={args[1]}  # Replace with your actual database name
-        export DB_USERNAME={args[1]}
-        export DB_PASSWORD={args[2]}
-        """
-    )
+    lambda args: f"""#!/bin/bash
+    # Create necessary directories and files with proper permissions
+    sudo mkdir -p /opt/webapp
+    sudo touch /opt/webapp/user-data-success.log
+    sudo chown -R $(whoami): /opt/webapp
+    
+    # Write environment variables to the .env file
+    echo 'DB_HOST={args[0]}' | sudo tee /opt/webapp/.env
+    echo 'DB_NAME={args[1]}' | sudo tee -a /opt/webapp/.env
+    echo 'DB_PASSWORD={args[2]}' | sudo tee -a /opt/webapp/.env
+    echo 'DB_USERNAME={args[1]}' | sudo tee -a /opt/webapp/.env
+    
+    # Record successful execution
+    echo 'Script executed successfully' | sudo tee /opt/webapp/user-data-success.log
+    
+    # Export environment variables to the system environment
+    echo 'DB_HOST={args[0]}' | sudo tee -a /etc/environment
+    echo 'DB_PORT=3306' | sudo tee -a /etc/environment
+    echo 'DB_NAME={args[1]}' | sudo tee -a /etc/environment
+    echo 'DB_USERNAME={args[1]}' | sudo tee -a /etc/environment
+    echo 'DB_PASSWORD={args[2]}' | sudo tee -a /etc/environment
+
+    # Start the CloudWatch agent
+    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \\
+    -a fetch-config \\
+    -m ec2 \\
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/CloudWatchAgent.json \\
+    -s
+    """
+)
+
+
+# Create IAM Role for EC2 instance
+ec2_role = iam.Role("ec2-role",
+    assume_role_policy="""{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": "sts:AssumeRole",
+                "Principal": {
+                    "Service": "ec2.amazonaws.com"
+                },
+                "Effect": "Allow",
+                "Sid": ""
+            }
+        ]
+    }"""
+)
+
+# # Define the custom CloudWatch Logs policy
+# policy_json = """{
+#     "Version": "2012-10-17",
+#     "Statement": [{
+#         "Effect": "Allow",
+#         "Action": [
+#             "logs:CreateLogGroup",
+#             "logs:CreateLogStream",
+#             "logs:PutLogEvents"
+#         ],
+#         "Resource": "*"
+#     }]
+# }"""
+
+# # Create an inline policy and attach it to the IAM role
+# cloudwatch_logs_policy = iam.RolePolicy("cloudwatch-logs-policy",
+#     role=ec2_role.name,
+#     policy=policy_json
+# )
+
+# Attach the CloudWatch Agent policy to the IAM role
+cloudwatch_policy_attachment = iam.RolePolicyAttachment("cloudwatch-policy-attachment",
+    policy_arn="arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+    role=ec2_role.name
+)
+
+# Create an instance profile for the EC2 instance
+ec2_instance_profile = iam.InstanceProfile('my_instance_profile',
+   role=ec2_role.name, # Assign the IAM role to the instance profile
+)
 
 # EC2 Instance
 ec2_instance = ec2.Instance('my-ec2-instance',
     instance_type='t2.micro',
     ami=ami_id,
+    iam_instance_profile=ec2_instance_profile.name, # Assign the instance profile to the EC2 instance
     vpc_security_group_ids=[app_security_group.id],
     subnet_id=public_subnets[0].id,
     key_name='webapp',
@@ -270,3 +364,18 @@ ec2_instance = ec2.Instance('my-ec2-instance',
 )
 
 pulumi.export('ec2_instance_id', ec2_instance.id)
+
+hosted_zone_id = config.require("hosted-zone-id")
+domain_name = config.require("domain-name")
+
+# Reference to your EC2 instance resource
+dns_record = route53.Record("dnsRecord",
+    zone_id=hosted_zone_id,
+    name=domain_name,
+    type="A",
+    ttl=300,
+    records=[ec2_instance.public_ip]
+)
+
+# Output the DNS record value
+pulumi.export('dnsRecord', dns_record.fqdn)
