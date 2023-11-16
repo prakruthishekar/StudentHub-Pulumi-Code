@@ -1,8 +1,10 @@
+import base64
 import pulumi
 from pulumi_aws import ec2
 from pulumi_aws import get_availability_zones
 from pulumi_aws import rds
 from pulumi_aws import route53
+import pulumi_aws as aws
 from pulumi_aws import ec2, get_availability_zones, rds, route53, iam
 
 config = pulumi.Config()
@@ -50,9 +52,6 @@ private_subnets = availability_zones.apply(
 )
 
 pulumi.export("Private Subnets", private_subnets)
-# Log Subnets
-# public_subnets.apply(lambda subnets: [print(f"Public Subnet Created: {subnet.id}") for subnet in subnets if subnet is not None])
-# private_subnets.apply(lambda subnets: [print(f"Private Subnet Created: {subnet.id}") for subnet in subnets if subnet is not None])
 
 # Create an Internet Gateway and attach the Internet Gateway to the VPC.
 internet_gateway = ec2.InternetGateway("my-internet-gateway",
@@ -101,6 +100,24 @@ internet_gateway_route = ec2.Route("internet-gateway-route",
 )
 
 
+# Security Group for Load Balancer
+lb_security_group = ec2.SecurityGroup('lbSecurityGroup',
+    vpc_id=vpc.id,
+    description='Load balancer security group',
+    ingress=[
+        {'protocol': 'tcp', 'from_port': 80, 'to_port': 80, 'cidr_blocks': ['0.0.0.0/0']},
+        {'protocol': 'tcp', 'from_port': 443, 'to_port': 443, 'cidr_blocks': ['0.0.0.0/0']}
+    ],
+    egress=[
+            aws.ec2.SecurityGroupEgressArgs(
+                from_port=0,
+                to_port=0,
+                protocol='-1',
+                cidr_blocks=['0.0.0.0/0']
+            )
+            ])
+
+
 # 1. Create the Application Security Group
 app_security_group = ec2.SecurityGroup('app-security-group',
     vpc_id=vpc.id,
@@ -112,23 +129,25 @@ app_security_group = ec2.SecurityGroup('app-security-group',
             to_port=22,
             cidr_blocks=['0.0.0.0/0']
         ),
+         # Allow HTTP from Load Balancer Security Group
         ec2.SecurityGroupIngressArgs(
-            protocol='tcp',
+            protocol="tcp",
             from_port=80,
             to_port=80,
-            cidr_blocks=['0.0.0.0/0']
+            security_groups=[lb_security_group.id]
         ),
+        # Allow HTTPS from Load Balancer Security Group
         ec2.SecurityGroupIngressArgs(
-            protocol='tcp',
-            from_port=8080,
-            to_port=8080,
-            cidr_blocks=['0.0.0.0/0']
-        ),
-        ec2.SecurityGroupIngressArgs(
-            protocol='tcp',
+            protocol="tcp",
             from_port=443,
             to_port=443,
-            cidr_blocks=['0.0.0.0/0']
+            security_groups=[lb_security_group.id]
+        ),
+         ec2.SecurityGroupIngressArgs(
+            protocol="tcp",
+            from_port=8080,
+            to_port=8080,
+            security_groups=[lb_security_group.id]
         ),
         # Add additional ingress rules for other ports as necessary
     ],
@@ -303,26 +322,6 @@ ec2_role = iam.Role("ec2-role",
     }"""
 )
 
-# # Define the custom CloudWatch Logs policy
-# policy_json = """{
-#     "Version": "2012-10-17",
-#     "Statement": [{
-#         "Effect": "Allow",
-#         "Action": [
-#             "logs:CreateLogGroup",
-#             "logs:CreateLogStream",
-#             "logs:PutLogEvents"
-#         ],
-#         "Resource": "*"
-#     }]
-# }"""
-
-# # Create an inline policy and attach it to the IAM role
-# cloudwatch_logs_policy = iam.RolePolicy("cloudwatch-logs-policy",
-#     role=ec2_role.name,
-#     policy=policy_json
-# )
-
 # Attach the CloudWatch Agent policy to the IAM role
 cloudwatch_policy_attachment = iam.RolePolicyAttachment("cloudwatch-policy-attachment",
     policy_arn="arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
@@ -334,48 +333,147 @@ ec2_instance_profile = iam.InstanceProfile('my_instance_profile',
    role=ec2_role.name, # Assign the IAM role to the instance profile
 )
 
-# EC2 Instance
-ec2_instance = ec2.Instance('my-ec2-instance',
+# Encode the user data script in base64
+encoded_user_data = user_data.apply(lambda data: base64.b64encode(data.encode()).decode())
+
+launch_template = ec2.LaunchTemplate("my-launch-template",
     instance_type='t2.micro',
-    ami=ami_id,
-    iam_instance_profile=ec2_instance_profile.name, # Assign the instance profile to the EC2 instance
-    vpc_security_group_ids=[app_security_group.id],
-    subnet_id=public_subnets[0].id,
+    image_id=ami_id,  # Specify the AMI ID here
+    iam_instance_profile={
+        "name": ec2_instance_profile.name
+    }, 
+    # vpc_security_group_ids=[app_security_group.id],
     key_name='webapp',
-    ebs_block_devices=[
-        ec2.InstanceEbsBlockDeviceArgs(
-            device_name='/dev/xvda',
-            volume_type='gp2',
-            volume_size=25,
-            delete_on_termination=True
-        )
-    ],
     instance_initiated_shutdown_behavior="stop",
-    root_block_device= ec2.InstanceRootBlockDeviceArgs(
-        volume_size=25,
-        volume_type='gp2',
-    ),
     disable_api_termination=False,
+    network_interfaces=[aws.ec2.LaunchTemplateNetworkInterfaceArgs(
+        associate_public_ip_address="true",
+        security_groups=[app_security_group.id, db_security_group.id],  # Move security group here
+    )],
     tags={
         'Name': 'my-ec2-instance'
     },
-    user_data=user_data,
+    user_data=encoded_user_data,
     opts=pulumi.ResourceOptions(depends_on=[rds_instance])
 )
 
-pulumi.export('ec2_instance_id', ec2_instance.id)
+# Extract subnet IDs from public_subnets
+public_subnet_ids = public_subnets.apply(lambda subnets: [subnet.id for subnet in subnets])
+
+# Auto Scaling Group
+autoscaling_group = aws.autoscaling.Group('autoscalingGroup',
+    min_size=1,
+    max_size=3,
+    desired_capacity=1,
+    launch_template={
+        'id': launch_template.id,
+        'version': "$Latest"
+    },
+    vpc_zone_identifiers=public_subnet_ids,
+    tags=[aws.autoscaling.GroupTagArgs(
+            key='Name',
+            value='my-autoscale-group',
+            propagate_at_launch=True
+            ),
+          aws.autoscaling.GroupTagArgs(
+            key='AutoScalingGroup',
+            value='web-app',
+            propagate_at_launch=True
+            ) 
+    ]
+)
+
+# Auto Scaling Policies
+scale_up_policy = aws.autoscaling.Policy('scaleUp',
+    scaling_adjustment=1,
+    adjustment_type='ChangeInCapacity',
+    cooldown=60,
+    autoscaling_group_name=autoscaling_group.name)
+
+scale_down_policy = aws.autoscaling.Policy('scaleDown',
+    scaling_adjustment=-1,
+    adjustment_type='ChangeInCapacity',
+    cooldown=60,
+    autoscaling_group_name=autoscaling_group.name)
+
+# We extract the ARNs using the .arn attribute and use the result for the alarms.
+scale_up_policy_arn = scale_up_policy.arn
+scale_down_policy_arn = scale_down_policy.arn
+
+# CloudWatch Alarms for Auto Scaling
+scale_up_alarm = aws.cloudwatch.MetricAlarm('scaleUpAlarm',
+    comparison_operator='GreaterThanThreshold',
+    evaluation_periods=2,
+    metric_name='CPUUtilization',
+    namespace='AWS/EC2',
+    period=300,
+    statistic='Average',
+    threshold=5,
+    alarm_actions=[scale_up_policy_arn],
+    dimensions={'AutoScalingGroupName': autoscaling_group.name})
+
+scale_down_alarm = aws.cloudwatch.MetricAlarm('scaleDownAlarm',
+    comparison_operator='LessThanThreshold',
+    evaluation_periods=2,
+    metric_name='CPUUtilization',
+    namespace='AWS/EC2',
+    period=300,
+    statistic='Average',
+    threshold=3,
+    alarm_actions=[scale_down_policy_arn],
+    dimensions={'AutoScalingGroupName': autoscaling_group.name})
+
+pulumi.export('launch_template_id', launch_template.id)
 
 hosted_zone_id = config.require("hosted-zone-id")
 domain_name = config.require("domain-name")
 
-# Reference to your EC2 instance resource
-dns_record = route53.Record("dnsRecord",
-    zone_id=hosted_zone_id,
-    name=domain_name,
-    type="A",
-    ttl=300,
-    records=[ec2_instance.public_ip]
+
+# Application Load Balancer
+app_lb = aws.lb.LoadBalancer('appLoadBalancer',
+    internal=False,
+    load_balancer_type="application",
+    security_groups=[lb_security_group.id],
+    subnets=public_subnet_ids,
+    enable_deletion_protection=False
 )
 
-# Output the DNS record value
-pulumi.export('dnsRecord', dns_record.fqdn)
+# Create a target group
+target_group = aws.lb.TargetGroup("targetGroup",
+    port=8080,  # Use your application port here
+    protocol="HTTP",  # or "HTTPS" if you're using SSL/TLS
+    vpc_id=vpc.id,  # Use the VPC ID here
+    target_type="instance",
+    health_check=aws.lb.TargetGroupHealthCheckArgs(
+                enabled=True,
+                path='/healthz',
+                protocol='HTTP',
+                port='8080',
+                timeout=25
+            ),
+
+)
+
+# Create a listener
+listener = aws.lb.Listener("listener",
+    load_balancer_arn=app_lb.arn,
+    port=80,  # Use the same application port
+    protocol="HTTP",
+    default_actions=[aws.lb.ListenerDefaultActionArgs(
+                type="forward",
+                target_group_arn=target_group.arn
+            )],
+)
+
+# DNS Updates with Route53
+dns_record = aws.route53.Record('dnsRecord',
+    zone_id=hosted_zone_id,  # Your Route53 Zone ID
+    name=domain_name,  # Update with your domain
+    type='A',
+    aliases=[
+        {
+            'name': app_lb.dns_name,
+            'zone_id': app_lb.zone_id,
+            'evaluate_target_health': True
+        }
+    ])
