@@ -107,15 +107,7 @@ lb_security_group = ec2.SecurityGroup('lbSecurityGroup',
     ingress=[
         {'protocol': 'tcp', 'from_port': 80, 'to_port': 80, 'cidr_blocks': ['0.0.0.0/0']},
         {'protocol': 'tcp', 'from_port': 443, 'to_port': 443, 'cidr_blocks': ['0.0.0.0/0']}
-    ],
-    egress=[
-            aws.ec2.SecurityGroupEgressArgs(
-                from_port=0,
-                to_port=0,
-                protocol='-1',
-                cidr_blocks=['0.0.0.0/0']
-            )
-            ])
+    ])
 
 
 # 1. Create the Application Security Group
@@ -129,20 +121,20 @@ app_security_group = ec2.SecurityGroup('app-security-group',
             to_port=22,
             cidr_blocks=['0.0.0.0/0']
         ),
-         # Allow HTTP from Load Balancer Security Group
-        ec2.SecurityGroupIngressArgs(
-            protocol="tcp",
-            from_port=80,
-            to_port=80,
-            security_groups=[lb_security_group.id]
-        ),
-        # Allow HTTPS from Load Balancer Security Group
-        ec2.SecurityGroupIngressArgs(
-            protocol="tcp",
-            from_port=443,
-            to_port=443,
-            security_groups=[lb_security_group.id]
-        ),
+        #  # Allow HTTP from Load Balancer Security Group
+        # ec2.SecurityGroupIngressArgs(
+        #     protocol="tcp",
+        #     from_port=80,
+        #     to_port=80,
+        #     security_groups=[lb_security_group.id]
+        # ),
+        # # Allow HTTPS from Load Balancer Security Group
+        # ec2.SecurityGroupIngressArgs(
+        #     protocol="tcp",
+        #     from_port=443,
+        #     to_port=443,
+        #     security_groups=[lb_security_group.id]
+        # ),
          ec2.SecurityGroupIngressArgs(
             protocol="tcp",
             from_port=8080,
@@ -154,29 +146,12 @@ app_security_group = ec2.SecurityGroup('app-security-group',
     # Add an egress rule to allow outbound traffic to the RDS instance
     egress= [
         ec2.SecurityGroupEgressArgs(
-            protocol="tcp",
-            from_port=443,
-            to_port=443,
-            cidr_blocks=['0.0.0.0/0'],
-            description="Allow outbound HTTPS traffic for CloudWatch Logs"
-        ),
-        # Allow other necessary outbound traffic, e.g., to RDS instance
-        ec2.SecurityGroupEgressArgs(
-            protocol="tcp",
-            from_port=3306,
-            to_port=3306,
-            cidr_blocks=['0.0.0.0/0'],
-            description="Allow outbound MySQL traffic to RDS instance"
-        ),
-        # Default rule to allow all outbound traffic
-        # Remove if you want to restrict outbound traffic
-        ec2.SecurityGroupEgressArgs(
             protocol="-1",
             from_port=0,
             to_port=0,
-            cidr_blocks=["0.0.0.0/0"],
-            description="Allow all outbound traffic by default"
-        ),
+            cidr_blocks=['0.0.0.0/0'],
+            description="Allow outbound HTTPS traffic for CloudWatch Logs"
+        )
     ],
         tags={"Name": "app-security-group"}
 )
@@ -193,18 +168,26 @@ db_security_group = ec2.SecurityGroup('db-security-group',
             to_port=3306,
             security_groups=[app_security_group.id]  # Reference to the application security group
         )
-    ],
-    egress=[
-        ec2.SecurityGroupEgressArgs(
-            protocol="tcp",
-            from_port=443,
-            to_port=443,
-            cidr_blocks=['0.0.0.0/0'],
-            description="Allow outbound HTTPS traffic for CloudWatch Logs"
-        )
     ]
 )
 
+my_egress_rule = aws.ec2.SecurityGroupRule("myEgressRule-db",
+    type="egress",
+    security_group_id=app_security_group.id,
+    protocol="tcp",
+    from_port=3306,
+    to_port=3306,
+    source_security_group_id=db_security_group.id
+)
+
+my_egress_rule = aws.ec2.SecurityGroupRule("myEgressRule-load-balancer",
+    type="egress",
+    security_group_id=lb_security_group.id,
+    protocol="tcp",
+    from_port=8080,
+    to_port=8080,
+    source_security_group_id=app_security_group.id
+)
 # Create RDS Parameter Group for MySQL
 rds_parameter_group = rds.ParameterGroup("db-parameter-group",
     family="mariadb10.6",
@@ -322,15 +305,15 @@ ec2_role = iam.Role("ec2-role",
     }"""
 )
 
+# Create an instance profile for the EC2 instance
+ec2_instance_profile = iam.InstanceProfile('my_instance_profile',
+   role=ec2_role.name, # Assign the IAM role to the instance profile
+)
+
 # Attach the CloudWatch Agent policy to the IAM role
 cloudwatch_policy_attachment = iam.RolePolicyAttachment("cloudwatch-policy-attachment",
     policy_arn="arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
     role=ec2_role.name
-)
-
-# Create an instance profile for the EC2 instance
-ec2_instance_profile = iam.InstanceProfile('my_instance_profile',
-   role=ec2_role.name, # Assign the IAM role to the instance profile
 )
 
 # Encode the user data script in base64
@@ -338,23 +321,39 @@ encoded_user_data = user_data.apply(lambda data: base64.b64encode(data.encode())
 
 launch_template = ec2.LaunchTemplate("my-launch-template",
     instance_type='t2.micro',
-    image_id=ami_id,  # Specify the AMI ID here
-    iam_instance_profile={
-        "name": ec2_instance_profile.name
-    }, 
-    # vpc_security_group_ids=[app_security_group.id],
+    image_id=ami_id,  # Specify the AMI ID here 
     key_name='webapp',
-    instance_initiated_shutdown_behavior="stop",
-    disable_api_termination=False,
-    network_interfaces=[aws.ec2.LaunchTemplateNetworkInterfaceArgs(
-        associate_public_ip_address="true",
-        security_groups=[app_security_group.id, db_security_group.id],  # Move security group here
-    )],
+    # instance_initiated_shutdown_behavior="stop",
     tags={
         'Name': 'my-ec2-instance'
     },
+    iam_instance_profile={
+        # "name": ec2_instance_profile.name,
+        "arn": ec2_instance_profile.arn
+    },
     user_data=encoded_user_data,
+    vpc_security_group_ids=[app_security_group.id],
     opts=pulumi.ResourceOptions(depends_on=[rds_instance])
+)
+
+
+# Create a target group
+target_group = aws.lb.TargetGroup("targetGroup",
+    port=8080,  # Use your application port here
+    protocol="HTTP",  # or "HTTPS" if you're using SSL/TLS
+    vpc_id=vpc.id,  # Use the VPC ID here
+    target_type="instance",
+    health_check=aws.lb.TargetGroupHealthCheckArgs(
+                enabled=True,
+                interval=30,
+                path='/healthz',
+                protocol='HTTP',
+                port='8080',
+                healthy_threshold=2,
+                unhealthy_threshold=2,
+                timeout=25
+            ),
+
 )
 
 # Extract subnet IDs from public_subnets
@@ -370,18 +369,16 @@ autoscaling_group = aws.autoscaling.Group('autoscalingGroup',
         'version': "$Latest"
     },
     vpc_zone_identifiers=public_subnet_ids,
-    tags=[aws.autoscaling.GroupTagArgs(
-            key='Name',
-            value='my-autoscale-group',
-            propagate_at_launch=True
-            ),
-          aws.autoscaling.GroupTagArgs(
-            key='AutoScalingGroup',
-            value='web-app',
-            propagate_at_launch=True
-            ) 
+    target_group_arns=[target_group.arn],
+    tags=[  # Ensure tags are outside and correctly placed in the function call
+        {
+            'key': 'Name',
+            'value': 'WebAppInstance',
+            'propagate_at_launch': True,
+        }
     ]
 )
+
 
 # Auto Scaling Policies
 scale_up_policy = aws.autoscaling.Policy('scaleUp',
@@ -406,7 +403,7 @@ scale_up_alarm = aws.cloudwatch.MetricAlarm('scaleUpAlarm',
     evaluation_periods=2,
     metric_name='CPUUtilization',
     namespace='AWS/EC2',
-    period=300,
+    period=60,
     statistic='Average',
     threshold=5,
     alarm_actions=[scale_up_policy_arn],
@@ -417,7 +414,7 @@ scale_down_alarm = aws.cloudwatch.MetricAlarm('scaleDownAlarm',
     evaluation_periods=2,
     metric_name='CPUUtilization',
     namespace='AWS/EC2',
-    period=300,
+    period=60,
     statistic='Average',
     threshold=3,
     alarm_actions=[scale_down_policy_arn],
@@ -436,22 +433,6 @@ app_lb = aws.lb.LoadBalancer('appLoadBalancer',
     security_groups=[lb_security_group.id],
     subnets=public_subnet_ids,
     enable_deletion_protection=False
-)
-
-# Create a target group
-target_group = aws.lb.TargetGroup("targetGroup",
-    port=8080,  # Use your application port here
-    protocol="HTTP",  # or "HTTPS" if you're using SSL/TLS
-    vpc_id=vpc.id,  # Use the VPC ID here
-    target_type="instance",
-    health_check=aws.lb.TargetGroupHealthCheckArgs(
-                enabled=True,
-                path='/healthz',
-                protocol='HTTP',
-                port='8080',
-                timeout=25
-            ),
-
 )
 
 # Create a listener
