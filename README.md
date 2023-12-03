@@ -96,7 +96,6 @@ This will delete or create the resource which had problem in getting created or 
 pulumi refresh 
 ```
 
-
 pulumi up
 
 pulumi down
@@ -109,4 +108,10 @@ pulumi config set username "csye6225"
 pulumi config set --secret dbPassword YOUR_PASSWORD_HERE
 pulumi config set hosted-zone-id "Z0498823D9PQ1YWPC88E"
 pulumi config set domain-name "dev.prakruthi.me"
+pulumi config set --secret mail_gun_api_key "5e04305e95f9391296d9594211a436f3-30b58138-688005de"
+pulumi config set mail_gun_domain prakruthi.me
+
+
 ```
+# Copy the installed packages from the virtual environment to the package directory
+cp -r venv/lib/python3.11/site-packages/* .  # replace python3.x with your Python version

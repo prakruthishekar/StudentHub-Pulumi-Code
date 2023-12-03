@@ -2,7 +2,7 @@ config:
   Main:cidrBlock: "10.0.0.0/16"
   aws-infrastructure-setup:cidrBlock: 10.0.0.0/16
   aws-infrastructure-setup:cloudName: us-east-1
-  aws-infrastructure-setup:customAmiId: ami-003c632ffb3df140c
+  aws-infrastructure-setup:customAmiId: ami-060c6fdf1a8edb7d3
   aws-infrastructure-setup:db_name: csye6225
   aws-infrastructure-setup:dbPassword:
     secure: AAABANRz0FIdcCSEqIH4BYuEqJmiAxYsdH+pcyXDG+lWgcasUuFi7cQ=

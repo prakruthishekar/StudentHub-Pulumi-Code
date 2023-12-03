@@ -1,15 +1,24 @@
 import base64
+import json
 import pulumi
+# from pulumi_aiven import GcpVpcPeeringConnection
 from pulumi_aws import ec2
 from pulumi_aws import get_availability_zones
 from pulumi_aws import rds
 from pulumi_aws import route53
 import pulumi_aws as aws
+import pulumi_gcp as gcp
 from pulumi_aws import ec2, get_availability_zones, rds, route53, iam
 
 config = pulumi.Config()
 db_name = config.require("db_name")
 db_username = config.require("username")
+gcp_project_id =config.require("gcp_project_id")
+gcp_region = config.require("gcp_region")
+region = config.require("region")
+account_id = config.require("account_id")
+mail_gun_domain = config.require("mail_gun_domain")
+mail_gun_api_key= config.require_secret("mail_gun_api_key")
 
 vpc = ec2.Vpc('vpc',
     cidr_block= config.require("cidrBlock"),
@@ -121,20 +130,6 @@ app_security_group = ec2.SecurityGroup('app-security-group',
             to_port=22,
             cidr_blocks=['0.0.0.0/0']
         ),
-        #  # Allow HTTP from Load Balancer Security Group
-        # ec2.SecurityGroupIngressArgs(
-        #     protocol="tcp",
-        #     from_port=80,
-        #     to_port=80,
-        #     security_groups=[lb_security_group.id]
-        # ),
-        # # Allow HTTPS from Load Balancer Security Group
-        # ec2.SecurityGroupIngressArgs(
-        #     protocol="tcp",
-        #     from_port=443,
-        #     to_port=443,
-        #     security_groups=[lb_security_group.id]
-        # ),
          ec2.SecurityGroupIngressArgs(
             protocol="tcp",
             from_port=8080,
@@ -254,40 +249,6 @@ pulumi.export('db_endpoint', rds_instance.id)
 ami_id = config.require("customAmiId")  # Ensure you set this value in your Pulumi configuration
 
 
-#User data generation
-user_data=pulumi.Output.all(rds_instance.endpoint, db_username, config.require_secret("dbPassword")).apply(
-    lambda args: f"""#!/bin/bash
-    # Create necessary directories and files with proper permissions
-    sudo mkdir -p /opt/webapp
-    sudo touch /opt/webapp/user-data-success.log
-    sudo chown -R $(whoami): /opt/webapp
-    
-    # Write environment variables to the .env file
-    echo 'DB_HOST={args[0]}' | sudo tee /opt/webapp/.env
-    echo 'DB_NAME={args[1]}' | sudo tee -a /opt/webapp/.env
-    echo 'DB_PASSWORD={args[2]}' | sudo tee -a /opt/webapp/.env
-    echo 'DB_USERNAME={args[1]}' | sudo tee -a /opt/webapp/.env
-    
-    # Record successful execution
-    echo 'Script executed successfully' | sudo tee /opt/webapp/user-data-success.log
-    
-    # Export environment variables to the system environment
-    echo 'DB_HOST={args[0]}' | sudo tee -a /etc/environment
-    echo 'DB_PORT=3306' | sudo tee -a /etc/environment
-    echo 'DB_NAME={args[1]}' | sudo tee -a /etc/environment
-    echo 'DB_USERNAME={args[1]}' | sudo tee -a /etc/environment
-    echo 'DB_PASSWORD={args[2]}' | sudo tee -a /etc/environment
-
-    # Start the CloudWatch agent
-    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \\
-    -a fetch-config \\
-    -m ec2 \\
-    -c file:/opt/aws/amazon-cloudwatch-agent/etc/CloudWatchAgent.json \\
-    -s
-    """
-)
-
-
 # Create IAM Role for EC2 instance
 ec2_role = iam.Role("ec2-role",
     assume_role_policy="""{
@@ -310,30 +271,29 @@ ec2_instance_profile = iam.InstanceProfile('my_instance_profile',
    role=ec2_role.name, # Assign the IAM role to the instance profile
 )
 
+# Create an IAM policy for publishing to SNS topics
+sns_publish_policy = aws.iam.Policy('snsPublishPolicy',
+    description='Allow EC2 instances to publish to SNS topics',
+    policy=json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": "sns:Publish",
+            "Resource": "*"  # It's recommended to specify the exact ARN of the SNS topic if possible
+        }]
+    })
+)
+
+# Attach the SNS publish policy to the IAM role
+sns_policy_attachment = aws.iam.RolePolicyAttachment('snsPolicyAttachment',
+    role=ec2_role.name,
+    policy_arn=sns_publish_policy.arn
+)
+
 # Attach the CloudWatch Agent policy to the IAM role
 cloudwatch_policy_attachment = iam.RolePolicyAttachment("cloudwatch-policy-attachment",
     policy_arn="arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
     role=ec2_role.name
-)
-
-# Encode the user data script in base64
-encoded_user_data = user_data.apply(lambda data: base64.b64encode(data.encode()).decode())
-
-launch_template = ec2.LaunchTemplate("my-launch-template",
-    instance_type='t2.micro',
-    image_id=ami_id,  # Specify the AMI ID here 
-    key_name='webapp',
-    # instance_initiated_shutdown_behavior="stop",
-    tags={
-        'Name': 'my-ec2-instance'
-    },
-    iam_instance_profile={
-        # "name": ec2_instance_profile.name,
-        "arn": ec2_instance_profile.arn
-    },
-    user_data=encoded_user_data,
-    vpc_security_group_ids=[app_security_group.id],
-    opts=pulumi.ResourceOptions(depends_on=[rds_instance])
 )
 
 
@@ -358,6 +318,107 @@ target_group = aws.lb.TargetGroup("targetGroup",
 
 # Extract subnet IDs from public_subnets
 public_subnet_ids = public_subnets.apply(lambda subnets: [subnet.id for subnet in subnets])
+
+
+# Create an SNS topic
+sns_topic = aws.sns.Topic('mySNSTopic')
+
+
+# Create a Google Cloud Storage Bucket
+bucket = gcp.storage.Bucket('csye-prakruthi-webapp',
+                            location='US')
+
+# Create a Google Service Account with a specified account_id
+service_account = gcp.serviceaccount.Account('myServiceAccount',
+                                             account_id='csye6225-service-id')
+
+# Create Google Service Account Keys
+service_account_key = gcp.serviceaccount.Key('myServiceAccountKey',
+                                             service_account_id=service_account.id)
+
+# Use apply to transform the service account email Output[T] into a string
+service_account_email = service_account.email.apply(lambda email: f"serviceAccount:{email}")
+
+# Assign the necessary role to the service account for the bucket
+bucket_iam_binding = gcp.storage.BucketIAMBinding('myBucketIamBinding',
+                                                  bucket=bucket.name,
+                                                  role='roles/storage.objectCreator',
+                                                  members=[service_account_email])
+
+# Create a DynamoDB instance
+dynamodb_table = aws.dynamodb.Table('myDynamoDBTable',
+                                    attributes=[
+                                        {
+                                            "name": "id",
+                                            "type": "S"
+                                        }
+                                    ],
+                                    hash_key="id",
+                                    billing_mode="PAY_PER_REQUEST")
+
+#User data generation
+user_data=pulumi.Output.all(rds_instance.endpoint, db_username, config.require_secret("dbPassword"), 
+                            sns_topic.arn, bucket.name, dynamodb_table.name).apply(
+    lambda args: f"""#!/bin/bash
+    # Create necessary directories and files with proper permissions
+    sudo mkdir -p /opt/webapp
+    sudo touch /opt/webapp/user-data-success.log
+    sudo chown -R $(whoami): /opt/webapp
+    
+    # Write environment variables to the .env file
+    echo 'DB_HOST={args[0]}' | sudo tee /opt/webapp/.env
+    echo 'DB_NAME={args[1]}' | sudo tee -a /opt/webapp/.env
+    echo 'DB_PASSWORD={args[2]}' | sudo tee -a /opt/webapp/.env
+    echo 'DB_USERNAME={args[1]}' | sudo tee -a /opt/webapp/.env
+    echo 'SNS_ARN={args[3]}' | sudo tee -a /opt/webapp/.env
+    echo 'BUCKET_NAME={args[4]}' | sudo tee -a /opt/webapp/.env
+    echo 'DYNAMODB_TABLE={args[5]}' | sudo tee -a /opt/webapp/.env
+
+
+    
+    # Record successful execution
+    echo 'Script executed successfully' | sudo tee /opt/webapp/user-data-success.log
+    
+    # Export environment variables to the system environment
+    echo 'DB_HOST={args[0]}' | sudo tee -a /etc/environment
+    echo 'DB_PORT=3306' | sudo tee -a /etc/environment
+    echo 'DB_NAME={args[1]}' | sudo tee -a /etc/environment
+    echo 'DB_USERNAME={args[1]}' | sudo tee -a /etc/environment
+    echo 'DB_PASSWORD={args[2]}' | sudo tee -a /etc/environment
+    echo 'SNS_ARN={args[3]}' | sudo tee -a /etc/environment
+    echo 'BUCKET_NAME={args[4]}' | sudo tee -a /etc/environmen
+    echo 'DYNAMODB_TABLE={args[5]}' | sudo tee -a /etc/environmen
+    
+
+
+    # Start the CloudWatch agent
+    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \\
+    -a fetch-config \\
+    -m ec2 \\
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/CloudWatchAgent.json \\
+    -s
+    """
+)
+
+
+# Encode the user data script in base64
+encoded_user_data = user_data.apply(lambda data: base64.b64encode(data.encode()).decode())
+
+launch_template = ec2.LaunchTemplate("my-launch-template",
+    instance_type='t2.micro',
+    image_id=ami_id,  # Specify the AMI ID here 
+    key_name='webapp',
+    tags={
+        'Name': 'my-ec2-instance'
+    },
+    iam_instance_profile={
+        "arn": ec2_instance_profile.arn
+    },
+    user_data=encoded_user_data,
+    vpc_security_group_ids=[app_security_group.id],
+    opts=pulumi.ResourceOptions(depends_on=[rds_instance])
+)
+
 
 # Auto Scaling Group
 autoscaling_group = aws.autoscaling.Group('autoscalingGroup',
@@ -458,3 +519,87 @@ dns_record = aws.route53.Record('dnsRecord',
             'evaluate_target_health': True
         }
     ])
+
+
+
+# Create a Lambda function
+lambda_role = iam.Role('lambdaRole', assume_role_policy=json.dumps({
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Action": "sts:AssumeRole",
+        "Principal": {
+            "Service": "lambda.amazonaws.com",
+        },
+        "Effect": "Allow",
+        "Sid": "",
+    }],
+}))
+
+lambda_policy = aws.iam.RolePolicy('lambdaPolicy',
+    role=lambda_role.id,
+    policy=pulumi.Output.all(bucket.id, sns_topic.arn, pulumi.Config().require('region'), pulumi.Config().require('account_id')).apply(
+        lambda args: json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Action": ["s3:GetObject"],
+                    "Effect": "Allow",
+                    "Resource": [f"arn:aws:s3:::{args[0]}/*"]
+                },
+                {
+                    "Action": ["sns:Publish"],
+                    "Effect": "Allow",
+                    "Resource": [args[1]]
+                },
+                {
+                    "Action": [
+                        "logs:CreateLogGroup",
+                        "logs:CreateLogStream",
+                        "logs:PutLogEvents"
+                    ],
+                    "Effect": "Allow",
+                    "Resource": [f"arn:aws:logs:{args[2]}:{args[3]}:*"]
+                }
+            ],
+        })
+    )
+)
+
+lambda_function = aws.lambda_.Function('myLambdaFunction',
+                                       role=lambda_role.arn,
+                                       runtime="python3.8",
+                                       handler="lambda_function.lambda_handler",
+                                       code=pulumi.FileArchive("Archive.zip"),
+                                       environment={
+                                           'variables': {
+                                               'GOOGLE_CREDENTIALS': service_account_key.private_key,
+                                               'SNS_TOPIC_ARN': sns_topic.arn,
+                                               'MAILGUN_API_KEY': mail_gun_api_key,
+                                               'MAILGUN_DOMAIN': mail_gun_domain,
+                                               'DYNAMODB_TABLE' : dynamodb_table.name,
+                                               'BUCKET_NAME' : bucket.name
+
+                                               # Add your Mailgun credentials and other environment variables here
+                                           }
+                                       })
+
+# Subscribe the Lambda function to the SNS topic
+sns_lambda_subscription = aws.sns.TopicSubscription('mySNSTopicSubscription',
+                                                    topic=sns_topic.arn,
+                                                    protocol="lambda",
+                                                    endpoint=lambda_function.arn,
+                                                    )
+
+# IAM policy to allow SNS to invoke the Lambda function
+sns_invoke_lambda_permission = aws.lambda_.Permission('snsInvokeLambdaPermission',
+                                                      action='lambda:InvokeFunction',
+                                                      function=lambda_function.arn,
+                                                      principal='sns.amazonaws.com',
+                                                      source_arn=sns_topic.arn)
+
+
+# Output the ARNs of the created resources
+pulumi.export('sns_topic_arn', sns_topic.arn)
+pulumi.export('bucket_name', bucket.id)
+pulumi.export('lambda_function_name', lambda_function.name)
+pulumi.export('dynamodb_table_name', dynamodb_table.name)
