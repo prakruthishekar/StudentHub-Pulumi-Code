@@ -13,6 +13,7 @@ from pulumi_aws import ec2, get_availability_zones, rds, route53, iam
 config = pulumi.Config()
 db_name = config.require("db_name")
 db_username = config.require("username")
+certificate_arn = config.require("certificate_arn")
 gcp_project_id =config.require("gcp_project_id")
 gcp_region = config.require("gcp_region")
 region = config.require("region")
@@ -114,9 +115,20 @@ lb_security_group = ec2.SecurityGroup('lbSecurityGroup',
     vpc_id=vpc.id,
     description='Load balancer security group',
     ingress=[
-        {'protocol': 'tcp', 'from_port': 80, 'to_port': 80, 'cidr_blocks': ['0.0.0.0/0']},
+        # {'protocol': 'tcp', 'from_port': 80, 'to_port': 80, 'cidr_blocks': ['0.0.0.0/0']},
         {'protocol': 'tcp', 'from_port': 443, 'to_port': 443, 'cidr_blocks': ['0.0.0.0/0']}
-    ])
+    ],
+
+    egress= [
+        ec2.SecurityGroupEgressArgs(
+            protocol="-1",
+            from_port=0,
+            to_port=0,
+            cidr_blocks=['0.0.0.0/0'],
+            # description="Allow outbound HTTPS traffic for CloudWatch Logs"
+        )
+    ]
+    )
 
 
 # 1. Create the Application Security Group
@@ -325,7 +337,7 @@ sns_topic = aws.sns.Topic('mySNSTopic')
 
 
 # Create a Google Cloud Storage Bucket
-bucket = gcp.storage.Bucket('csye-prakruthi-webapp',
+bucket = gcp.storage.Bucket('csye-prakruthi-cloudwebapp',
                             location='US')
 
 # Create a Google Service Account with a specified account_id
@@ -370,8 +382,10 @@ user_data=pulumi.Output.all(rds_instance.endpoint, db_username, config.require_s
     echo 'DB_NAME={args[1]}' | sudo tee -a /opt/webapp/.env
     echo 'DB_PASSWORD={args[2]}' | sudo tee -a /opt/webapp/.env
     echo 'DB_USERNAME={args[1]}' | sudo tee -a /opt/webapp/.env
-    echo 'SNS_ARN={args[3]}' | sudo tee -a /opt/webapp/.env
+    echo 'snsTopicArn={args[3]}' | sudo tee -a /opt/webapp/.env
     echo 'BUCKET_NAME={args[4]}' | sudo tee -a /opt/webapp/.env
+    echo 'awsRegion={region}' | sudo tee -a /opt/webapp/.env
+    
     echo 'DYNAMODB_TABLE={args[5]}' | sudo tee -a /opt/webapp/.env
 
 
@@ -385,9 +399,10 @@ user_data=pulumi.Output.all(rds_instance.endpoint, db_username, config.require_s
     echo 'DB_NAME={args[1]}' | sudo tee -a /etc/environment
     echo 'DB_USERNAME={args[1]}' | sudo tee -a /etc/environment
     echo 'DB_PASSWORD={args[2]}' | sudo tee -a /etc/environment
-    echo 'SNS_ARN={args[3]}' | sudo tee -a /etc/environment
-    echo 'BUCKET_NAME={args[4]}' | sudo tee -a /etc/environmen
-    echo 'DYNAMODB_TABLE={args[5]}' | sudo tee -a /etc/environmen
+    echo 'snsTopicArn={args[3]}' | sudo tee -a /etc/environment
+    echo 'BUCKET_NAME={args[4]}' | sudo tee -a /etc/environment
+    echo 'DYNAMODB_TABLE={args[5]}' | sudo tee -a /etc/environment
+    echo 'awsRegion={region}' | sudo tee -a /opt/webapp/.env
     
 
 
@@ -406,6 +421,7 @@ encoded_user_data = user_data.apply(lambda data: base64.b64encode(data.encode())
 
 launch_template = ec2.LaunchTemplate("my-launch-template",
     instance_type='t2.micro',
+    name= "my-launch-template",
     image_id=ami_id,  # Specify the AMI ID here 
     key_name='webapp',
     tags={
@@ -424,6 +440,7 @@ launch_template = ec2.LaunchTemplate("my-launch-template",
 autoscaling_group = aws.autoscaling.Group('autoscalingGroup',
     min_size=1,
     max_size=3,
+    name= "autoscalingGroup",
     desired_capacity=1,
     launch_template={
         'id': launch_template.id,
@@ -499,8 +516,10 @@ app_lb = aws.lb.LoadBalancer('appLoadBalancer',
 # Create a listener
 listener = aws.lb.Listener("listener",
     load_balancer_arn=app_lb.arn,
-    port=80,  # Use the same application port
-    protocol="HTTP",
+    port=443, 
+    protocol="HTTPS",
+    ssl_policy="ELBSecurityPolicy-2016-08",
+    certificate_arn=certificate_arn,
     default_actions=[aws.lb.ListenerDefaultActionArgs(
                 type="forward",
                 target_group_arn=target_group.arn
@@ -550,6 +569,11 @@ lambda_policy = aws.iam.RolePolicy('lambdaPolicy',
                     "Action": ["sns:Publish"],
                     "Effect": "Allow",
                     "Resource": [args[1]]
+                },
+                {
+                "Action": ["dynamodb:PutItem"],
+                "Effect": "Allow",
+                "Resource": [f"arn:aws:dynamodb:*:*:table/{dynamodb_table.name}"]
                 },
                 {
                     "Action": [

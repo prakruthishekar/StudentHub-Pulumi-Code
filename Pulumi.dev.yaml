@@ -1,6 +1,8 @@
 config:
+  aws-infrastructure-setup:account_id: "226534876078"
+  aws-infrastructure-setup:certificate_arn: arn:aws:acm:us-east-1:226534876078:certificate/8c4e498c-1d1e-492f-9f76-a1dfa5e64fd3
   aws-infrastructure-setup:cidrBlock: 10.0.0.0/16
-  aws-infrastructure-setup:customAmiId: ami-05b61f5e4bb9bbaa4
+  aws-infrastructure-setup:customAmiId: ami-0ebf70fa69fabd935
   aws-infrastructure-setup:db_name: csye6225
   aws-infrastructure-setup:dbPassword:
     secure: AAABAJJe8R0seKPpWC3h6Eu/euk0bIP3OEcp9cyK+7CCz2w3zBJeiOZ4HlRvdQk=
@@ -12,9 +14,8 @@ config:
     secure: AAABAG0ZDvyKhk+z24z6VZOSHWGaPUG5AiHrNlgGly/8Y1VHZHFJoI/PH55C2d+qf6BNUINe6At9+H0XbxX2LrbKi6BhHybbm62FvLALNVYqSA==
   aws-infrastructure-setup:mail_gun_domain: prakruthi.me
   aws-infrastructure-setup:planName: business-4
+  aws-infrastructure-setup:region: us-east-1
   aws-infrastructure-setup:serviceName: kafka-gcp-eu
   aws-infrastructure-setup:username: csye6225
   aws:profile: dev
-  aws-infrastructure-setup:region: us-east-1
-  aws-infrastructure-setup:account_id: 226534876078
   gcp:project: csye-dev-406600
