@@ -106,9 +106,9 @@ Set the Secret in Pulumi Configuration: You can use the Pulumi CLI to set the se
 pulumi config set db_name "csye6225"
 pulumi config set username "csye6225"
 pulumi config set --secret dbPassword YOUR_PASSWORD_HERE
-pulumi config set hosted-zone-id "Z0498823D9PQ1YWPC88E"
+pulumi config set hosted-zone-id "***23D9PQ1YW****"
 pulumi config set domain-name "dev.prakruthi.me"
-pulumi config set --secret mail_gun_api_key "5e04305e95f9391296d9594211a436f3-30b58138-688005de"
+pulumi config set --secret mail_gun_api_key "******d9594211a436f3-3******"
 pulumi config set mail_gun_domain prakruthi.me
 
 
